@@ -1,4 +1,4 @@
-# WASEDO — Gamma-Quant (Inertial / Multi-Frequency DeepConvLSTM)
+# WASEDO — Gamma-Quant (Multi-Frequency ContConv-LSTM)
 
 This repository contains:
 - Multi-frequency DeepConvLSTM experts (6 Hz / 12 Hz / 25 Hz)
