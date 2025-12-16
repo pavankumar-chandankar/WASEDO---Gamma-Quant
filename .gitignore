@@ -1,16 +1,18 @@
-# env
+# env (ignore both dir and potential symlink name)
+.venv
 .venv/
 __pycache__/
 *.pyc
+
+# datasets / generated windows
+data
+data/
+*.npz
 
 # logs / artifacts
 logs/
 wandb/
 *.log
-
-# datasets / generated windows (keep code reproducible, not data-heavy)
-data/
-*.npz
 
 # OS/editor
 .DS_Store
