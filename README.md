@@ -12,9 +12,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 ./scripts/deepconvlstm.ch
-./scripts/continuous_conv.sh
-./scripts/test_deepconvlstm.sh
-./scripts/test_continuous_conv.sh
 
 ./scripts/continuous_conv.sh
 
