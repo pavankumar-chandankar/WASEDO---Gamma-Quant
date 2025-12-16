@@ -114,7 +114,7 @@ def build_single_freq_splits(
     labels = labels.astype(np.uint8)
 
     n_windows = windows.shape[0]
-    print(f"[{freq_tag}]
+    print(f"[{freq_tag}] windows after sliding window: {n_windows}")
 
     rng = np.random.RandomState(seed)
     indices = np.arange(n_windows)
