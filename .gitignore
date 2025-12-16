@@ -1,0 +1,21 @@
+# env
+.venv/
+__pycache__/
+*.pyc
+
+# logs / artifacts
+logs/
+wandb/
+*.log
+
+# datasets / generated windows (keep code reproducible, not data-heavy)
+data/
+*.npz
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# misc
+*.tmp
