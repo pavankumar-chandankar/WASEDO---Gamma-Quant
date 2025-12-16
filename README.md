@@ -1,29 +1,24 @@
-<<<<<<< HEAD
-# GAMMA-QUANT
-=======
-# γ-Quant: Towards Learnable Quantization for Low-bit Pattern Recognition
-## Inertial Experiments
+# WASEDO — Gamma-Quant (Inertial / Multi-Frequency DeepConvLSTM)
 
-This folder contains all relevant files to reproduce experiments mentioned within Section 4 of the main paper (i.e. all experiments using inertial data as input).
+This repository contains:
+- Multi-frequency DeepConvLSTM experts (6 Hz / 12 Hz / 25 Hz)
+- Cascade evaluation across frequencies
+- Gamma-Quant inference (quantization + gamma)
 
-## Installation
-Please follow instructions mentioned in the [INSTALL.md](/inertial/INSTALL.md) file within this folder.
+## Environment
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 
-## Download
-Datasets used for conducting experiments can be downloaded [here](https://uni-siegen.sciebo.de/s/gq2S7nomosqfNPa). Place the downloaded folder into this subfolder (`inertial`) of the main repository. If not already the case, rename the folder to be called `data`. You can also specify a different data directory within the `configs` files by adjusting the `sens_folder` and `anno_json` accordingly.
+./scripts/deepconvlstm.ch
+./scripts/continuous_conv.sh
+./scripts/test_deepconvlstm.sh
+./scripts/test_continuous_conv.sh
 
-## Reproduce Experiments
-Rerun experiments by running the `main.py` script. For example:
+./scripts/continuous_conv.sh
 
-````
-python main.py --config ./configs/deepconvlstm/hangtime_loso.yaml --seed 1
-````
+./scripts/test_deepconvlstm.sh
 
-Each config file represents one type of experiment. The folder `job_scripts` contains collections of commands of all experiments mentioned in the paper.
+./scripts/test_continuous_conv.sh
 
-## Logging using Neptune.ai
-In order to log experiments to [Neptune.ai](https://neptune.ai) please provide `project` and `api_token` information in your local deployment (see `main.py`)
-
-## Contact
-Marius Bock (marius.bock(at)uni-siegen.de)
->>>>>>> c5ef567 (Initial commit: gamma-quant inertial pipeline)
