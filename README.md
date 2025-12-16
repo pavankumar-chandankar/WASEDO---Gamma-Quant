@@ -11,7 +11,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-./scripts/deepconvlstm.ch
+./scripts/deepconvlstm.sh
 
 ./scripts/continuous_conv.sh
 
