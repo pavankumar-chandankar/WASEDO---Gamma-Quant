@@ -3,11 +3,7 @@ from typing import List, Optional, Sequence, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-try:
-    from .DeepConvLSTM import DeepConvLSTM
-except ImportError:
-    from DeepConvLSTM import DeepConvLSTM
+from DeepConvLSTM import DeepConvLSTM
 
 
 FREQ_FOR_CLASS: List[str] = [
