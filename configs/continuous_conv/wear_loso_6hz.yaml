@@ -40,7 +40,9 @@ model: {
   lstm_units: 128,
   lstm_layers: 1,
   dropout: 0.5,
-  conv_type: 'standard',
+  conv_type: 'continuous',
+  conv_rank: 8,
+  conv_mlp_hidden_dim: 32,
   }
 train_cfg: {
   lr: 0.0001,
