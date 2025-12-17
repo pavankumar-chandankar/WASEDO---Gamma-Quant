@@ -40,6 +40,7 @@ model: {
   lstm_units: 128,
   lstm_layers: 1,
   dropout: 0.5,
+  conv_type: 'standard',
   }
 train_cfg: {
   lr: 0.0001,
@@ -51,6 +52,6 @@ train_cfg: {
   weighted_loss: True,
 }
 loader: {
-  train_batch_size: 100,
-  test_batch_size: 1,
+  train_batch_size: 256,
+  test_batch_size: 64,
 }
