@@ -52,6 +52,6 @@ train_cfg: {
   weighted_loss: True,
 }
 loader: {
-  train_batch_size: 100,
-  test_batch_size: 1,
+  train_batch_size: 256,
+  test_batch_size: 64,
 }
