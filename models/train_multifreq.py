@@ -41,7 +41,7 @@ class InertialWindowDataset(Dataset):
         return self.features.shape[0]
 
     def __getitem__(self, index: int):
-        x = self.features[index]  # (T, C)
+        x = self.features[index]
         y = self.labels[index]
         return x, y
 
