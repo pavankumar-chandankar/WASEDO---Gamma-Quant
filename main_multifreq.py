@@ -7,7 +7,11 @@ from typing import Dict, List, Set
 import torch
 import yaml
 
-from models.train_multifreq import run_inertial_expert_702010, test_multifreq_cascade
+from models.train_multifreq import (
+    run_inertial_expert_702010,
+    run_inertial_expert_loso,
+    test_multifreq_cascade,
+)
 
 
 def load_config(config_path: str) -> Dict:
@@ -69,6 +73,13 @@ def main() -> None:
     parser.add_argument("--config", type=str, required=True, help="Path to YAML config.")
     parser.add_argument("--seed", type=int, default=1, help="Random seed.")
     parser.add_argument("--mode", type=str, default="train_expert", choices=["train_expert", "test_multifreq"])
+    parser.add_argument(
+        "--protocol",
+        type=str,
+        default="loso",
+        choices=["loso", "702010"],
+        help="Training protocol for expert models. Default: loso.",
+    )
 
     parser.add_argument("--freq-tag", type=str, default=None, help="Frequency tag: e.g. 6hz, 12hz, 25hz.")
     parser.add_argument(
@@ -108,6 +119,7 @@ def main() -> None:
     parser.add_argument("--ckpt-6hz", type=str, default="", help="Checkpoint for 6 Hz expert.")
     parser.add_argument("--ckpt-12hz", type=str, default="", help="Checkpoint for 12 Hz expert.")
     parser.add_argument("--ckpt-25hz", type=str, default="", help="Checkpoint for 25 Hz expert.")
+    parser.add_argument("--ckpt-50hz", type=str, default="", help="Optional checkpoint for 50 Hz expert.")
 
     args = parser.parse_args()
 
@@ -124,33 +136,55 @@ def main() -> None:
         if args.freq_tag is None:
             raise ValueError("--freq-tag must be provided in train_expert mode (e.g. 6hz, 12hz, 25hz).")
 
-        log_dir = os.path.join("logs", cfg_name, f"{args.freq_tag}_702010", ts)
+        log_dir = os.path.join("logs", cfg_name, f"{args.freq_tag}_{args.protocol}", ts)
         print(f"Logging to: {log_dir}")
 
-        best_ckpt = run_inertial_expert_702010(
-            cfg=cfg,
-            sbj_list=sbj_list,
-            log_dir=log_dir,
-            freq_tag=args.freq_tag,
-            seed=args.seed,
-            test_split_dir=args.test_split_dir,
-            device=device,
-            gamma_quant=args.gamma_quant,
-            quant_bits=args.quant_bits,
-            gamma_type=args.gamma_type,
-            apply_gamma=args.apply_gamma,
-            resume=args.resume,
-            ckpt_freq=args.ckpt_freq,
-        )
+        if args.protocol == "702010":
+            best_ckpt = run_inertial_expert_702010(
+                cfg=cfg,
+                sbj_list=sbj_list,
+                log_dir=log_dir,
+                freq_tag=args.freq_tag,
+                seed=args.seed,
+                test_split_dir=args.test_split_dir,
+                device=device,
+                gamma_quant=args.gamma_quant,
+                quant_bits=args.quant_bits,
+                gamma_type=args.gamma_type,
+                apply_gamma=args.apply_gamma,
+                resume=args.resume,
+                ckpt_freq=args.ckpt_freq,
+            )
+            print("\n------------------------------------------------------------")
+            print(f"Finished training expert for {args.freq_tag} (702010 window split).")
+            print(f"Best checkpoint saved at: {best_ckpt}")
+            print("------------------------------------------------------------\n")
+        else:
+            best_ckpts = run_inertial_expert_loso(
+                cfg=cfg,
+                sbj_list=sbj_list,
+                log_dir=log_dir,
+                seed=args.seed,
+                test_split_dir=args.test_split_dir,
+                device=device,
+                gamma_quant=args.gamma_quant,
+                quant_bits=args.quant_bits,
+                gamma_type=args.gamma_type,
+                apply_gamma=args.apply_gamma,
+                resume=args.resume,
+                ckpt_freq=args.ckpt_freq,
+            )
 
-        print("\n------------------------------------------------------------")
-        print(f"Finished training expert for {args.freq_tag}.")
-        print(f"Best checkpoint saved at: {best_ckpt}")
-        print("------------------------------------------------------------\n")
+            print("\n------------------------------------------------------------")
+            print(f"Finished LOSO training for {args.freq_tag}.")
+            print(f"Number of splits trained: {len(best_ckpts)}")
+            if best_ckpts:
+                print(f"Example best checkpoint: {best_ckpts[0]}")
+            print("------------------------------------------------------------\n")
 
     elif args.mode == "test_multifreq":
         if not (args.ckpt_6hz and args.ckpt_12hz and args.ckpt_25hz):
-            raise ValueError("Please provide ckpt-12hz, 12 hz or 66hz in ckpt_mode")
+            raise ValueError("Please provide --ckpt-6hz, --ckpt-12hz and --ckpt-25hz for test_multifreq.")
 
         print("Running multi-frequency cascade evaluation on held-out 10% windows...")
         test_multifreq_cascade(
@@ -158,6 +192,7 @@ def main() -> None:
             ckpt_6hz=args.ckpt_6hz,
             ckpt_12hz=args.ckpt_12hz,
             ckpt_25hz=args.ckpt_25hz,
+            ckpt_50hz=args.ckpt_50hz,
             test_split_dir=args.test_split_dir,
             device=device,
             gamma_quant=args.gamma_quant,
