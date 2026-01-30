@@ -8,17 +8,82 @@ from sklearn.utils import compute_class_weight
 import torch
 from torch.utils.data import DataLoader
 import torch.nn as nn
+import torch.nn.functional as F
 
 from utils.data_utils import convert_samples_to_segments, unwindow_inertial_data
-from utils.torch_utils import (
+from utils.torch_utils_final import (
     init_weights,
     save_checkpoint,
     worker_init_reset_seed,
     InertialDataset,
 )
 from utils.os_utils import mkdir_if_missing
-from models.DeepConvLSTM import DeepConvLSTM
+from models.DeepConvLSTM_final import DeepConvLSTM
 from models.map_metric import ANETdetection
+
+
+def _pretty_freq_tag_from_len(t: int) -> str:
+    if int(t) == 50:
+        return "50hz"
+    if int(t) == 25:
+        return "25hz"
+    if int(t) == 12:
+        return "12hz"
+    if int(t) == 6:
+        return "6hz"
+    return f"{int(t)}t"
+
+
+def _infer_multirate_lengths_from_model(net: nn.Module):
+    if hasattr(net, "branches"):
+        b = getattr(net, "branches")
+        if isinstance(b, nn.ModuleDict):
+            out = []
+            for k in b.keys():
+                try:
+                    out.append(int(k))
+                except Exception:
+                    pass
+            out = sorted(set(out), reverse=True)
+            return out
+    return []
+
+
+def _resample_time(x: torch.Tensor, target_len: int) -> torch.Tensor:
+    x = x.contiguous()
+    target_len = int(target_len)
+    if x.shape[1] == target_len:
+        return x
+    x_t = x.transpose(1, 2)
+    x_rs = F.interpolate(x_t, size=target_len, mode="linear", align_corners=False)
+    return x_rs.transpose(1, 2).contiguous()
+
+
+def validate_one_epoch_resampled(loader, network, criterion, target_len: int, gpu=None):
+    network.eval()
+    losses = []
+    preds = np.array([], dtype=np.int64)
+    gt = np.array([], dtype=np.int64)
+
+    with torch.no_grad():
+        for _, (inputs, targets) in enumerate(loader):
+            if gpu is not None:
+                inputs = inputs.to(gpu)
+                targets = targets.to(gpu)
+
+            inputs = _resample_time(inputs, target_len)
+
+            outputs = network(inputs)
+            batch_loss = criterion(outputs, targets.long())
+            losses.append(batch_loss.item())
+
+            batch_preds = np.argmax(outputs.cpu().detach().numpy(), axis=-1)
+            batch_gt = targets.cpu().numpy().flatten()
+
+            preds = np.concatenate((preds, batch_preds))
+            gt = np.concatenate((gt, batch_gt))
+
+    return losses, preds, gt
 
 
 def run_inertial_network(
@@ -35,15 +100,15 @@ def run_inertial_network(
     gamma_type="id",
     apply_gamma="global",
 ):
-    split_name = cfg["dataset"]["json_anno"].split("/")[-1].split(".")[0]
+    split_name = os.path.splitext(os.path.basename(cfg["dataset"]["json_anno"]))[0]
     sampling_rate = float(cfg["dataset"]["sampling_rate"])
 
     if abs(sampling_rate - 50.0) < 1e-3:
         freq_tag = "50hz"
     elif abs(sampling_rate - 25.0) < 1e-3:
         freq_tag = "25hz"
-    elif abs(sampling_rate - 12.5) < 1e-3:
-        freq_tag = "12_5hz"
+    elif abs(sampling_rate - 12.0) < 1e-3 or abs(sampling_rate - 12.5) < 1e-3:
+        freq_tag = "12hz"
     elif abs(sampling_rate - 6.0) < 1e-3:
         freq_tag = "6hz"
     else:
@@ -51,6 +116,14 @@ def run_inertial_network(
 
     ckpt_folder = os.path.join("logs", "deepconvlstm", freq_tag, split_name)
     mkdir_if_missing(ckpt_folder)
+
+    last_ckpt_path = os.path.join(ckpt_folder, f"last_{split_name}.pth.tar")
+
+    auto_resume = cfg.get("train_cfg", {}).get("auto_resume", True)
+    if (resume is None or resume == "") and auto_resume and os.path.isfile(last_ckpt_path):
+        resume = last_ckpt_path
+        print(f"Auto-resume: using {resume}")
+
     train_data = np.empty((0, cfg["dataset"]["input_dim"] + 2))
     val_data = np.empty((0, cfg["dataset"]["input_dim"] + 2))
 
@@ -67,6 +140,7 @@ def run_inertial_network(
         v_df = v_df.replace({"label": cfg["label_dict"]}).fillna(0)
         v_arr = v_df.to_numpy()
         val_data = np.append(val_data, v_arr, axis=0)
+
     min_train = np.min(train_data[:, 1:-1])
     max_train = np.max(train_data[:, 1:-1])
 
@@ -81,6 +155,7 @@ def run_inertial_network(
     print("Min/ Max values in validation data: [{:.2f}, {:.2f}]".format(
         np.min(val_data[:, 1:-1]), np.max(val_data[:, 1:-1])
     ))
+
     train_dataset = InertialDataset(
         train_data,
         cfg["dataset"]["window_size"],
@@ -100,36 +175,41 @@ def run_inertial_network(
     else:
         class_id2name = None
 
+    num_workers = int(cfg.get("loader", {}).get("num_workers", 4))
+    if os.name == "nt":
+        num_workers = 0
+    persistent_workers = (num_workers > 0) and (os.name != "nt")
+
     if cfg["name"] in ["shallow_deepconvlstm", "deepconvcontext"]:
         print("DID NOT SHUFFLE (model {})".format(cfg["name"]))
         train_loader = DataLoader(
             train_dataset,
             batch_size=cfg["loader"]["train_batch_size"],
             shuffle=False,
-            num_workers=4,
+            num_workers=num_workers,
             worker_init_fn=worker_init_reset_seed,
             generator=rng_generator,
-            persistent_workers=True,
+            persistent_workers=persistent_workers,
         )
     else:
         train_loader = DataLoader(
             train_dataset,
             batch_size=cfg["loader"]["train_batch_size"],
             shuffle=True,
-            num_workers=4,
+            num_workers=num_workers,
             worker_init_fn=worker_init_reset_seed,
             generator=rng_generator,
-            persistent_workers=True,
+            persistent_workers=persistent_workers,
         )
 
     test_loader = DataLoader(
         test_dataset,
         batch_size=cfg["loader"]["test_batch_size"],
         shuffle=False,
-        num_workers=4,
+        num_workers=num_workers,
         worker_init_fn=worker_init_reset_seed,
         generator=rng_generator,
-        persistent_workers=True,
+        persistent_workers=persistent_workers,
     )
 
     if cfg["name"] != "deepconvlstm":
@@ -163,6 +243,7 @@ def run_inertial_network(
         )
     )
     print(net)
+
     gpu = torch.device("cuda") if torch.cuda.is_available() else None
     if gpu is not None:
         net = net.to(gpu)
@@ -210,6 +291,7 @@ def run_inertial_network(
             print(f"No checkpoint found at '{resume}'")
     else:
         net = init_weights(net, cfg["train_cfg"]["weight_init"])
+
     det_eval = ANETdetection(
         cfg["dataset"]["json_anno"],
         "validation",
@@ -223,17 +305,54 @@ def run_inertial_network(
     v_preds_out = None
     v_gt_out = None
 
+    mr_cfg = cfg.get("train_cfg", {}).get("multirate_val_lengths", None)
+    if mr_cfg is not None:
+        multirate_lengths = [int(x) for x in mr_cfg]
+    else:
+        multirate_lengths = _infer_multirate_lengths_from_model(net)
+
+    base_len = int(cfg["dataset"]["window_size"])
+    multirate_lengths = [int(x) for x in multirate_lengths if int(x) > 0]
+    multirate_lengths = sorted(set(multirate_lengths), reverse=True)
+
+    save_per_class_multirate = bool(cfg.get("train_cfg", {}).get("multirate_save_per_class", True))
+
     for epoch in range(start_epoch, cfg["train_cfg"]["epochs"]):
         net.train()
         train_epoch_losses = []
 
-        for i, (inputs, targets) in enumerate(train_loader):
+        # -------------------------------
+        # NEW: init per-epoch branch usage
+        # -------------------------------
+        model_ref = net.module if hasattr(net, "module") else net
+        train_rate_counts = {}
+        if hasattr(model_ref, "branches"):
+            try:
+                train_rate_counts = {int(k): 0 for k in model_ref.branches.keys()}
+            except Exception:
+                train_rate_counts = {}
+        elif hasattr(model_ref, "supported_sample_rates"):
+            try:
+                train_rate_counts = {int(k): 0 for k in model_ref.supported_sample_rates}
+            except Exception:
+                train_rate_counts = {}
+
+        for _, (inputs, targets) in enumerate(train_loader):
             opt.zero_grad()
             if gpu is not None:
                 inputs = inputs.to(gpu)
                 targets = targets.to(gpu)
 
             outputs = net(inputs)
+
+            # -----------------------------------------
+            # NEW: count which branch this batch used
+            # -----------------------------------------
+            if train_rate_counts:
+                hz = getattr(model_ref, "last_sample_rate", None)
+                if hz in train_rate_counts:
+                    train_rate_counts[hz] += int(inputs.size(0))
+
             loss = criterion(outputs, targets.long())
             loss.backward()
             opt.step()
@@ -242,13 +361,28 @@ def run_inertial_network(
 
         t_losses.append(float(np.nanmean(train_epoch_losses)))
 
+        # Create a pretty usage string once per epoch
+        train_branch_usage_msg = None
+        if train_rate_counts:
+            total = sum(train_rate_counts.values())
+            if total > 0:
+                order = [50, 25, 12, 6]
+                order = [h for h in order if h in train_rate_counts] + [h for h in sorted(train_rate_counts) if h not in order]
+                train_branch_usage_msg = "TRAIN BRANCH USAGE: " + ", ".join(
+                    f"{h}hz {100.0 * train_rate_counts[h] / total:.1f}% ({train_rate_counts[h]})"
+                    for h in order
+                )
+
+        # -------------------------
+        # Base validation (UNCHANGED)
+        # -------------------------
         net.eval()
         with torch.no_grad():
             val_epoch_losses = []
             preds = np.array([], dtype=np.int64)
             gt = np.array([], dtype=np.int64)
 
-            for i, (inputs, targets) in enumerate(test_loader):
+            for _, (inputs, targets) in enumerate(test_loader):
                 if gpu is not None:
                     inputs = inputs.to(gpu)
                     targets = targets.to(gpu)
@@ -336,6 +470,8 @@ def run_inertial_network(
 
         print(block1)
         print(block2)
+        if train_branch_usage_msg is not None:
+            print(train_branch_usage_msg)
         print(block3)
         print(block4)
 
@@ -351,6 +487,72 @@ def run_inertial_network(
             run["val/rec_mean"].log(avg_rec)
             run["val/f1_mean"].log(avg_f1)
 
+        # ------------------------------------------------------------
+        # EXTRA: multi-rate validation metrics (25/12/6) using resampling
+        # ------------------------------------------------------------
+        if multirate_lengths:
+            for L in multirate_lengths:
+                L = int(L)
+                if L == base_len:
+                    continue
+
+                v_losses_L, v_preds_L, v_gt_L = validate_one_epoch_resampled(
+                    test_loader, net, criterion, target_len=L, gpu=gpu
+                )
+
+                conf_L = confusion_matrix(v_gt_L, v_preds_L, normalize="true")
+                v_acc_L = conf_L.diagonal()
+                v_prec_L = precision_score(v_gt_L, v_preds_L, average=None, zero_division=1)
+                v_rec_L = recall_score(v_gt_L, v_preds_L, average=None, zero_division=1)
+                v_f1_L = f1_score(v_gt_L, v_preds_L, average=None, zero_division=1)
+
+                avg_acc_L = float(np.nanmean(v_acc_L) * 100.0)
+                avg_prec_L = float(np.nanmean(v_prec_L) * 100.0)
+                avg_rec_L = float(np.nanmean(v_rec_L) * 100.0)
+                avg_f1_L = float(np.nanmean(v_f1_L) * 100.0)
+
+                tagL = _pretty_freq_tag_from_len(L)
+                print(f"VALIDATION@{tagL}:\tavg. loss {float(np.nanmean(v_losses_L)):.4f}")
+                print(
+                    f"\t\tAcc {avg_acc_L:4.2f} (%) Prec {avg_prec_L:4.2f} (%) "
+                    f"Rec {avg_rec_L:4.2f} (%) F1 {avg_f1_L:4.2f} (%)"
+                )
+
+                if run is not None:
+                    run[f"val_{tagL}/loss"].log(float(np.nanmean(v_losses_L)))
+                    run[f"val_{tagL}/acc_mean"].log(avg_acc_L)
+                    run[f"val_{tagL}/prec_mean"].log(avg_prec_L)
+                    run[f"val_{tagL}/rec_mean"].log(avg_rec_L)
+                    run[f"val_{tagL}/f1_mean"].log(avg_f1_L)
+
+                if save_per_class_multirate:
+                    num_classes_L = len(v_acc_L)
+                    if class_id2name is not None and len(class_id2name) == num_classes_L:
+                        class_names_L = [class_id2name[i] for i in range(num_classes_L)]
+                    else:
+                        class_names_L = [f"class_{i}" for i in range(num_classes_L)]
+
+                    per_class_df_L = pd.DataFrame(
+                        {
+                            "split": [split_name] * num_classes_L,
+                            "sampling_rate_cfg": [sampling_rate] * num_classes_L,
+                            "eval_len": [L] * num_classes_L,
+                            "eval_tag": [tagL] * num_classes_L,
+                            "epoch": [epoch + 1] * num_classes_L,
+                            "class_id": list(range(num_classes_L)),
+                            "class_name": class_names_L,
+                            "acc": v_acc_L,
+                            "prec": v_prec_L,
+                            "rec": v_rec_L,
+                            "f1": v_f1_L,
+                        }
+                    )
+                    per_class_path_L = os.path.join(
+                        ckpt_folder, f"per_class_metrics_{split_name}_{tagL}.csv"
+                    )
+                    per_class_df_L.to_csv(per_class_path_L, index=False)
+
+        # Save BEST (unchanged: still based on base avg_f1)
         if avg_f1 > best_f1:
             best_f1 = avg_f1
             best_epoch = epoch + 1
@@ -397,6 +599,19 @@ def run_inertial_network(
                 ckpt_folder, f"per_class_metrics_{split_name}.csv"
             )
             per_class_df.to_csv(per_class_path, index=False)
+
+        # Save LAST every epoch (for resume)
+        save_checkpoint(
+            {
+                "epoch": epoch + 1,
+                "state_dict": net.state_dict(),
+                "optimizer": opt.state_dict(),
+                "best_f1": best_f1,
+            },
+            False,
+            file_folder=ckpt_folder,
+            file_name=f"last_{split_name}.pth.tar",
+        )
 
         if scheduler is not None:
             scheduler.step()
